@@ -13,12 +13,15 @@ function validation(){
      die("Connection failed: " . $conn->connect_error);
     }
 
-    $sql = "SELECT user_id, account_id, status, amount FROM withdrawals_transactions WHERE status='PENDING'";
+    $sql = "SELECT user_id, name, cpf, bank_code, agency, account, amount, status 
+            FROM withdrawals_transactions 
+            WHERE status='PENDING'";
+
     $result = $conn->query($sql);
 
     if ($result->num_rows > 0) {
 
-        //Array para armazenar o Select de solicitações com status "PENDENTE"
+        //Array para armazenar o Select de solicitações com status "PENDING"
         $spArray = array();
 
         // Armazena cada linha vinda do Select como Objeto no array $spArray
@@ -26,7 +29,11 @@ function validation(){
             $spArray = [
                 {
                     "user_id" => $row[]["user_id"],
-                    "account_id" => $row[]["account_id"],
+                    "name" => $row[]["name"],
+                    "cpf" => $row[]["cpf"],
+                    "bank_code" => $row[]["bank_code"],
+                    "agency" => $row[]["agency"],
+                    "account" => $row[]["account"],
                     "amount" => $row[]["amount"],
                     "status" => $row[]["status"]
                 }
@@ -44,82 +51,67 @@ function validation(){
                 $aprovArray = [
                     {
                         "user_id" => $spArray[$i]["user_id"],
-                        "account_id" => $spArray[$i]["account_id"],
+                        "name" => $spArray[$i]["name"],
+                        "cpf" => $spArray[$i]["cpf"],
+                        "bank_code" => $spArray[$i]["bank_code"],
+                        "agency" => $spArray[$i]["agency"],
+                        "account" => $spArray[$i]["account"],
                         "amount" => $spArray[$i]["amount"],
                         "status" => $spArray[$i]["status"]
                     }
                 ];
+
+                // Atualiza o status da solicitação para PROCESSING
+                updateStatus($aprovArray[$i]["user_id"], "PROCESSING");
+
+                // Chamada função PIX e armazena a resposta da gerencianet
+                $response = callPixAPI($aprovArray[$i]);
+
+                if($response == 200) {
+                    // Atualiza o status da solicitação para WAITING
+                    updateStatus($aprovArray[$i]["user_id"], "WAITING");
+                } else {
+                    // Atualiza o status da solicitação para REVISION
+                    updateStatus($aprovArray[$i]["user_id"], "REVISION");
+                }
+
             } else {
                 // Armazena solicitações não validadas
                 $reprovArray = [
                     {
                         "user_id" => $spArray[$i]["user_id"],
-                        "account_id" => $spArray[$i]["account_id"],
+                        "name" => $spArray[$i]["name"],
+                        "cpf" => $spArray[$i]["cpf"],
+                        "bank_code" => $spArray[$i]["bank_code"],
+                        "agency" => $spArray[$i]["agency"],
+                        "account" => $spArray[$i]["account"],
                         "amount" => $spArray[$i]["amount"],
                         "status" => $spArray[$i]["status"]
                     }
                 ];
+
+                // Atualiza o status da solicitação para REVISION
+                updateStatus($reprovArray[$i]["user_id"], "REVISION");
             }
         }
-
-        // Atualizar no BD o status das solicitações
-
-        // Update a solicitação para status "PROCESSING"
-        for($i = 0; $i < count($aprovArray); $i++){
-            $sql = "UPDATE withdrawals_transactions SET status='PROCESSING' WHERE id=$aprovArray[$i]["user_id"]";
-
-            if ($conn->query($sql) === TRUE) {
-                echo "Record updated successfully";
-                
-              } else {
-                echo "Error updating record: " . $conn->error;
-            }
-
-            // Chamada função PIX passando user_id
-            callPixAPI($aprovArray[$i]["user_id"]);
-        }
-
-        // Update a solicitação para status "REVISION"
-        for($i = 0; $i <= count($reprovArray); $i++;){
-            $sql = "UPDATE withdrawals_transactions SET status='REVISION' WHERE id=$reprovArray[$i]["user_id"]";
-        }
-
-        if ($conn->query($sql) === TRUE) {
-            echo "Record updated successfully";
-            
-          } else {
-            echo "Error updating record: " . $conn->error;
-        }
-
     } else {
         echo "0 results";
     }
     $conn->close();
 }
 
-function callPixAPI($user_id){
-    
-    /**CODE DB CONNECT */
+function updateStatus($user_id, $status){
+    $sql = "UPDATE withdrawals_transactions SET status=$status WHERE id=$user_id";
 
-    $sql = "SELECT name, cpf, bank_code, agency, account, amount 
-            FROM withdrawals_transactions 
-            WHERE status='PROCESSING' 
-            AND user_id=$user_id";
-
-    $result = $conn->query($sql);
-
-    // Armazena a linha em um Objeto
-    while($row = $result->fetch_assoc()) {
-        $pixArray = {
-            "user_id" => $user_id,
-            "name" => $row["name"],
-            "cpf" => $row["cpf"],
-            "bank_code" => $row["bank_code"],
-            "agency" => $row["agency"],
-            "account" => $row["account"]
-            "amount" => $row["amount"]
-        };
+     if ($conn->query($sql) === TRUE) {
+        echo "Record updated successfully";
+                
+    } else {
+        echo "Error updating record: " . $conn->error;
     }
+}
+
+function callPixAPI($obj){
 
     $url = 'https://api-pix-h.gerencianet.com.br';
     $header = 'authorization: {{Authorization}}';
@@ -129,18 +121,18 @@ function callPixAPI($user_id){
 
     $data = [
         {
-            "valor": $pixArray->$amount,
+            "valor": $obj->$amount,
             "pagador": {
               "chave": "Chave_BV",
               "infoPagador": "Segue o pagamento da conta"
             },
             "favorecido": {
               "contaBanco": {
-                "nome": $pixArray->$name,
-                "cpf": $pixArray->$cpf,
-                "codigoBanco": $pixArray->$bank_code,
-                "agencia": $pixArray->$agency,
-                "conta": $pixArray->$account,
+                "nome": $obj->$name,
+                "cpf": $obj->$cpf,
+                "codigoBanco": $obj->$bank_code,
+                "agencia": $obj->$agency,
+                "conta": $obj->$account,
                 "tipoConta": "cacc"
               }
             }
@@ -156,27 +148,29 @@ function callPixAPI($user_id){
 
     $response = curl_exec($curl);
 
-    if($response == 200){
-        $sql = "UPDATE withdrawals_transactions SET status='WAITING' WHERE user_id=$user_id";
+    return $response;
 
-        if ($conn->query($sql) === TRUE) {
-            echo "Record updated successfully";
-            
-          } else {
-            echo "Error updating record: " . $conn->error;
-        }
-
-    } else {
-        $sql = "UPDATE withdrawals_transactions SET status='REVISION' WHERE user_id=$user_id";
-
-        if ($conn->query($sql) === TRUE) {
-            echo "Record updated successfully";
-            
-          } else {
-            echo "Error updating record: " . $conn->error;
-        }
-
-    }
     curl_close($curl);
-}  
+}
+
+function webhookResponse() {
+
+    $e2E = $pix->endToEndId //Callback da gerencianet - dúvida
+
+    $sql = "SELECT user_id
+            FROM user_payments 
+            WHERE endToEndId=$e2E";
+
+    $result = $conn->query($sql);
+
+    if ($result->num_rows > 0) {
+        $pix->status === "REALIZADO" ? 
+        updateStatus($result->user_id, "CONFIRM") : 
+        updateStatus($result->user_id, "REVISION");
+    }else {
+        echo "0 results";
+    }
+
+    $conn->close();
+}
 ?>

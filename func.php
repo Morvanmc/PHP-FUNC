@@ -156,52 +156,48 @@ function callPixAPI($obj){
 
 function webhookResponse() {
  
-    $clientId = 'informe_seu_client_id'; // insira seu Client_Id, conforme o ambiente (Des ou Prod)
-    $clientSecret = 'informe_seu_client_secret'; // insira seu Client_Secret, conforme o ambiente (Des ou Prod)
- 
-    $options = [
-        'client_id' => $clientId,
-        'client_secret' => $clientSecret,
-        'sandbox' => true // altere conforme o ambiente (true = Homologação e false = producao)
-    ];
- 
-    /*
-    * Este token será recebido em sua variável que representa os parâmetros do POST
-    * Ex.: $_POST['notification']
-    */
-    $token = $_POST["notification"];
- 
-    $params = [
-        'token' => $token
-    ];
- 
     try {
-        $api = new Gerencianet($options);
-        $chargeNotification = $api->getNotification($params, []);
-    // Para identificar o status atual da sua transação você deverá contar o número de situações contidas no array, pois a última posição guarda sempre o último status. Veja na um modelo de respostas na seção "Exemplos de respostas" abaixo.
-  
-    // Veja abaixo como acessar o ID e a String referente ao último status da transação.
+        $api = new Gerencianet();
+        $callbackNotification = $api->getNotification();
     
-    // Conta o tamanho do array data (que armazena o resultado)
-    $i = count($chargeNotification["data"]);
-    // Pega o último Object chargeStatus
-    $ultimoStatus = $chargeNotification["data"][$i-1];
-    // Acessando o array Status
-    $status = $ultimoStatus["status"];
-    // Obtendo o ID da transação    
-    $charge_id = $ultimoStatus["identifiers"]["charge_id"];
-    // Obtendo a String do status atual
-    $statusAtual = $status["current"];
+        $e2E = $callbackNotification->$pix["endToEndId"];
+
+    if($callbackNotification->$pix["status"] == "REALIZADO"){
+
+        $sql = "SELECT user_id 
+        FROM user_payments 
+        WHERE endToEndId=$e2E";
     
-    // Com estas informações, você poderá consultar sua base de dados e atualizar o status da transação especifica, uma vez que você possui o "charge_id" e a String do STATUS
-  
-    if($statusAtual == "paid"){
-        updateStatus(/**$user_id - Duvida */, "PAID");
+        $result = $conn->query($sql);
+
+        if ($result->num_rows > 0) {
+            updateStatus($result, "PAID");
+        } else {
+            echo "0 results";
+        }
+
     } else {
-        updateStatus(/**$user_id - Duvida */, "REVISION");
+
+        $sql = "SELECT user_id 
+        FROM user_payments 
+        WHERE endToEndId=$e2E";
+    
+        $result = $conn->query($sql);
+
+        if ($result->num_rows > 0) {
+            updateStatus($result, "REVISION");
+        } else {
+            echo "0 results";
+        }
     }
- 
-    //print_r($chargeNotification);
+
+     if ($conn->query($sql) === TRUE) {
+        echo "Record updated successfully";
+                
+    } else {
+        echo "Error updating record: " . $conn->error;
+    }
+
 } catch (GerencianetException $e) {
     print_r($e->code);
     print_r($e->error);

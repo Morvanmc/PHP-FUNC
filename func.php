@@ -1,208 +1,96 @@
-<?php
-require __DIR__.'/../../vendor/autoload.php';
+/**
+     * Validate and update withdrawals transaction status
+     */
+    public function validateWithdrawals()
+    {
+        $pendingTransactions = DB::Table('withdrawals_transactions')->where('status', 'PENDENTE')->get();
 
-function validation(){
-    $servername = "localhost";
-    $username = "username";
-    $password = "password";
-    $dbname = "myDB";
+        if (count($pendingTransactions) > 0) {
+            $limit = 50;
 
-    // Create connection
-    $conn = new mysqli($servername, $username, $password, $dbname);
-    // Check connection
-    if ($conn->connect_error) {
-     die("Connection failed: " . $conn->connect_error);
-    }
+            foreach ($pendingTransactions as $pendingTransaction) {
+                if ($pendingTransaction->amount <= $limit) {
+                    WithdrawalsController::updateWithdrawals($pendingTransaction->user_id, 'PROCESS');
+                    
+                    $response = WithdrawalsController::requestPix($pendingTransaction);
 
-    $sql = "SELECT user_id, name, cpf, bank_code, agency, account, amount, status 
-            FROM withdrawals_transactions 
-            WHERE status='PENDING'";
-
-    $result = $conn->query($sql);
-
-    if ($result->num_rows > 0) {
-
-        //Array para armazenar o Select de solicitações com status "PENDING"
-        $spArray = array();
-
-        // Armazena cada linha vinda do Select como Objeto no array $spArray
-        while($row = $result->fetch_assoc()) {
-            $spArray = [
-                {
-                    "user_id" => $row[]["user_id"],
-                    "name" => $row[]["name"],
-                    "cpf" => $row[]["cpf"],
-                    "bank_code" => $row[]["bank_code"],
-                    "agency" => $row[]["agency"],
-                    "account" => $row[]["account"],
-                    "amount" => $row[]["amount"],
-                    "status" => $row[]["status"]
-                }
-            ];
-        }
-
-        $limiteSaque = 500;
-        $aprovArray = array();
-        $reprovArray = array();
-
-        // Validação das solicitações que estão dentro do limite de saque
-        for($i = 0; $i < count($spArray); $i++){
-            if($spArray[$i]['valor'] <= $limiteSaque){
-                // Armazena solicitações validadas
-                $aprovArray = [
-                    {
-                        "user_id" => $spArray[$i]["user_id"],
-                        "name" => $spArray[$i]["name"],
-                        "cpf" => $spArray[$i]["cpf"],
-                        "bank_code" => $spArray[$i]["bank_code"],
-                        "agency" => $spArray[$i]["agency"],
-                        "account" => $spArray[$i]["account"],
-                        "amount" => $spArray[$i]["amount"],
-                        "status" => $spArray[$i]["status"]
+                    if ($response == 200) {
+                        WithdrawalsController::updateWithdrawals($pendingTransaction->user_id, 'WAITING');
+                    } else {
+                        WithdrawalsController::updateWithdrawals($pendingTransaction->user_id, 'REVISION');
                     }
-                ];
-
-                // Atualiza o status da solicitação para PROCESSING
-                updateStatus($aprovArray[$i]["user_id"], "PROCESSING");
-
-                // Chamada função PIX e armazena a resposta da gerencianet
-                $response = callPixAPI($aprovArray[$i]);
-
-                if($response == 200) {
-                    // Atualiza o status da solicitação para WAITING
-                    updateStatus($aprovArray[$i]["user_id"], "WAITING");
                 } else {
-                    // Atualiza o status da solicitação para REVISION
-                    updateStatus($aprovArray[$i]["user_id"], "REVISION");
+                    WithdrawalsController::updateWithdrawals($pendingTransaction->user_id, 'REVISION');
                 }
-
-            } else {
-                // Armazena solicitações não validadas
-                $reprovArray = [
-                    {
-                        "user_id" => $spArray[$i]["user_id"],
-                        "name" => $spArray[$i]["name"],
-                        "cpf" => $spArray[$i]["cpf"],
-                        "bank_code" => $spArray[$i]["bank_code"],
-                        "agency" => $spArray[$i]["agency"],
-                        "account" => $spArray[$i]["account"],
-                        "amount" => $spArray[$i]["amount"],
-                        "status" => $spArray[$i]["status"]
-                    }
-                ];
-
-                // Atualiza o status da solicitação para REVISION
-                updateStatus($reprovArray[$i]["user_id"], "REVISION");
             }
-        }
-    } else {
-        echo "0 results";
-    }
-    $conn->close();
-}
-
-function updateStatus($user_id, $status){
-    $sql = "UPDATE withdrawals_transactions SET status=$status WHERE id=$user_id";
-
-     if ($conn->query($sql) === TRUE) {
-        echo "Record updated successfully";
-                
-    } else {
-        echo "Error updating record: " . $conn->error;
-    }
-}
-
-function callPixAPI($obj){
-
-    $url = 'https://api-pix-h.gerencianet.com.br';
-    $header = 'authorization: {{Authorization}}';
-    $collection_name = 'v2/pix';
-    
-    $request_url = $url . '/' . $collection_name;
-
-    $data = [
-        {
-            "valor": $obj->$amount,
-            "pagador": {
-              "chave": "Chave_BV",
-              "infoPagador": "Segue o pagamento da conta"
-            },
-            "favorecido": {
-              "contaBanco": {
-                "nome": $obj->$name,
-                "cpf": $obj->$cpf,
-                "codigoBanco": $obj->$bank_code,
-                "agencia": $obj->$agency,
-                "conta": $obj->$account,
-                "tipoConta": "cacc"
-              }
-            }
-        }    
-    ];
-
-    $curl = curl_init($request_url);
-
-    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($curl, CURLOPT_CUSTOMREQUEST, 'POST');
-    curl_setopt($curl, CURLOPT_POSTFIELDS,  json_encode($data));
-    curl_setopt($curl, CURLOPT_HTTPHEADER, $header);
-
-    $response = curl_exec($curl);
-
-    return $response;
-
-    curl_close($curl);
-}
-
-function webhookResponse() {
- 
-    try {
-        $api = new Gerencianet();
-        $callbackNotification = $api->getNotification();
-    
-        $e2E = $callbackNotification->$pix["endToEndId"];
-
-    if($callbackNotification->$pix["status"] == "REALIZADO"){
-
-        $sql = "SELECT user_id 
-        FROM user_payments 
-        WHERE endToEndId=$e2E";
-    
-        $result = $conn->query($sql);
-
-        if ($result->num_rows > 0) {
-            updateStatus($result, "PAID");
         } else {
-            echo "0 results";
-        }
-
-    } else {
-
-        $sql = "SELECT user_id 
-        FROM user_payments 
-        WHERE endToEndId=$e2E";
-    
-        $result = $conn->query($sql);
-
-        if ($result->num_rows > 0) {
-            updateStatus($result, "REVISION");
-        } else {
-            echo "0 results";
+            return 'Tudo certo por aqui! Nenhuma solicitação pendente.';
         }
     }
 
-     if ($conn->query($sql) === TRUE) {
-        echo "Record updated successfully";
-                
-    } else {
-        echo "Error updating record: " . $conn->error;
-    }
+    /**
+     * updateWithdrawals
+     */
 
-} catch (GerencianetException $e) {
-    print_r($e->code);
-    print_r($e->error);
-    print_r($e->errorDescription);
-} catch (Exception $e) {
-    print_r($e->getMessage());
-}
-?>
+     public function updateWithdrawals($user_id, $status)
+     {
+        DB::table('withdrawals_transactions')->where('user_id',$user_id)->update(['status' => $status]);
+     }
+
+    /**
+     * Call PIX API Gerencianet
+     */
+
+    public function requestPix()
+    {
+        $tokens = DB::Table('tokens')->where('type', 'hub2b')->first();
+        if ($tokens) {
+            $token = $tokens->token;
+        }
+
+        $url = env('ENDPOINT');
+        $headers = [
+            'Cache-Control: no-cache',
+            'Content-type: application/json',
+            'Authorization: Bearer ' . $token
+        ];
+
+        $collection_name = 'v2/pix';
+        $certificate =  __DIR__ . env('CERTIFICATE');
+        $endPoint = $url . '/' . $collection_name;
+        print_r($endPoint);
+        exit;
+        $data = [
+            "valor" => "99.99",
+            "pagador" => [
+                "chave" => "19974764017",
+                "infoPagador" => "Segue o pagamento da conta"
+            ],
+            "favorecido" => [
+                "nome" => "JOSE CARVALHO",
+                "cpf" => "10519952057",
+                "codigoBanco" => "09089356",
+                "agencia" => "1",
+                "conta" => "123453",
+                "tipoConta" => "cacc"
+            ]
+        ];
+
+        $curl = curl_init();
+        curl_setopt_array($curl, [
+            CURLOPT_URL => $endPoint,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_POSTFIELDS => json_encode($data, JSON_UNESCAPED_UNICODE),
+            CURLOPT_SSLCERT => $certificate,
+            CURLOPT_SSLCERTPASSWD => '',
+            CURLOPT_HTTPHEADER => $headers
+        ]);
+
+        $response = curl_exec($curl);
+        $response = json_decode($response, true);
+        
+        curl_close($curl);
+
+        return $response;     
+    }
